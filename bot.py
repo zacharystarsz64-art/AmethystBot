@@ -1081,6 +1081,19 @@ async def on_ready():
         except Exception as e:
             print(f"Error sending startup log: {e}")
 
+@bot.event
+async def on_member_join(member):
+    """Automatically give new members the Member role"""
+    MEMBER_ROLE_ID = 1497772252031352943
+    
+    try:
+        role = member.guild.get_role(MEMBER_ROLE_ID)
+        if role:
+            await member.add_roles(role, reason="Auto-assign Member role on join")
+            print(f"✅ Assigned Member role to {member.name}")
+    except Exception as e:
+        print(f"❌ Failed to assign Member role to {member.name}: {e}")
+
 @tree.command(name="sync", description="Force sync slash commands (Owner only)")
 async def sync_command(interaction: discord.Interaction):
     if not interaction.user.guild_permissions.administrator:
