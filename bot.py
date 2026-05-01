@@ -5,6 +5,7 @@ import aiohttp
 import asyncio
 import os
 import time
+from datetime import datetime
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
@@ -21,6 +22,7 @@ AS_WAITLIST_CHANNEL_ID = 1497774571238068324
 RESULTS_CHANNEL_ID = 1497774543350009936
 BOT_COMMANDS_CHANNEL_ID = 1498027031513006191
 REQUEST_TEST_CHANNEL_ID = 1497774516892336159     # Channel for the main waitlist form (e.g., #request-test)
+LOG_CHANNEL_ID = None                              # Channel for bot logs (set to enable logging)
 
 # Store message IDs for updating the queue display
 waitlist_messages = {"na": None, "eu": None, "as": None}
@@ -42,6 +44,9 @@ BOOSTER_COOLDOWN = 1 * 24 * 60 * 60     # 1 day
 # Store last test completion timestamps {user_id: timestamp}
 user_cooldowns = {}
 
+# Store last testing session timestamp per region {region: datetime}
+last_testing_session = {"na": None, "eu": None, "as": None}
+
 # =======================================================
 
 # Store verified users {user_id: {"ign": ign, "uuid": uuid}}
@@ -56,6 +61,33 @@ user_ranks = {}
 active_sessions = {}
 # Queue size limit
 QUEUE_SIZE_LIMIT = 10
+
+
+async def log_event(guild, title, description, color=discord.Color.blue(), fields=None):
+    """Send a log embed to the configured log channel"""
+    if not LOG_CHANNEL_ID:
+        return
+    
+    try:
+        log_channel = guild.get_channel(LOG_CHANNEL_ID)
+        if not log_channel:
+            return
+        
+        embed = discord.Embed(
+            title=title,
+            description=description,
+            color=color,
+            timestamp=datetime.now()
+        )
+        
+        if fields:
+            for name, value, inline in fields:
+                embed.add_field(name=name, value=value, inline=inline)
+        
+        await log_channel.send(embed=embed)
+    except Exception as e:
+        print(f"Failed to send log: {e}")
+
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -92,6 +124,20 @@ class QueueUpdateView(View):
                 f"**You are {restricted_reason} from entering the waitlist.**\n"
                 "If you believe this is an error, please contact an administrator.",
                 ephemeral=True
+            )
+
+            # Log restricted/blacklisted attempt
+            await log_event(
+                interaction.guild,
+                f"🚫 {restricted_reason.title()} User Attempt",
+                f"{interaction.user.mention} attempted to join the waitlist but is {restricted_reason}",
+                discord.Color.red(),
+                [
+                    ("User", interaction.user.mention, True),
+                    ("User ID", str(interaction.user.id), True),
+                    ("Status", restricted_reason.title(), True),
+                    ("Attempted Via", "Join Queue Button", False)
+                ]
             )
             return
 
@@ -142,7 +188,35 @@ class QueueUpdateView(View):
                 f"Time Remaining: **{time_str}**",
                 ephemeral=True
             )
+
+            # Log cooldown violation
+            await log_event(
+                interaction.guild,
+                "⏱️ Cooldown Violation",
+                f"{interaction.user.mention} attempted to join waitlist while on cooldown",
+                discord.Color.yellow(),
+                [
+                    ("User", interaction.user.mention, True),
+                    ("Cooldown Type", cooldown_type, True),
+                    ("Time Remaining", time_str, True),
+                    ("Attempted Via", "Join Queue Button", False)
+                ]
+            )
             return
+
+        # Log if user is using booster cooldown
+        if has_booster:
+            await log_event(
+                interaction.guild,
+                "⚡ Booster Cooldown Active",
+                f"{interaction.user.mention} passed cooldown check with booster status",
+                discord.Color.purple(),
+                [
+                    ("User", interaction.user.mention, True),
+                    ("Cooldown Type", "Booster (1 Day)", True),
+                    ("Status", "Cooldown expired/passed", True)
+                ]
+            )
 
         # This button is for players to enter the waitlist modal
         if interaction.user.id not in verified_users:
@@ -234,8 +308,12 @@ async def update_queue_display(guild, region):
     testers_for_region = active_testers.get(region, set())
     players_in_queue = [entry for entry in waitlist if entry["region"] == region]
     
-    from datetime import datetime
-    now_str = datetime.now().strftime('%B %d, %Y %I:%M %p')
+    # Format last testing session time for this region
+    region_last_session = last_testing_session.get(region)
+    if region_last_session:
+        last_session_str = region_last_session.strftime('%B %d, %Y %I:%M %p')
+    else:
+        last_session_str = "No recent testing sessions"
 
     if not testers_for_region:
         # No testers online embed
@@ -248,7 +326,7 @@ async def update_queue_display(guild, region):
             ),
             color=discord.Color.red()
         )
-        embed.set_footer(text=f"Last testing session: {now_str}")
+        embed.set_footer(text=f"Last testing session: {last_session_str}")
         view = None # No buttons when no testers
     else:
         # Testers available embed
@@ -354,6 +432,19 @@ class VerifyModal(Modal, title="Verify Minecraft Account"):
                             embed=embed,
                             ephemeral=True
                         )
+
+                        # Log verification
+                        await log_event(
+                            interaction.guild,
+                            "✅ User Verified",
+                            f"{interaction.user.mention} verified their Minecraft account",
+                            discord.Color.green(),
+                            [
+                                ("Discord User", interaction.user.mention, True),
+                                ("IGN", real_ign, True),
+                                ("UUID", uuid[:8] + "...", False)
+                            ]
+                        )
                         return
 
         # If we get here, verification failed
@@ -402,6 +493,20 @@ class WaitlistModal(Modal, title="Join the Waitlist"):
                 f"**You are {restricted_reason} from entering the waitlist.**\n"
                 "If you believe this is an error, please contact an administrator.",
                 ephemeral=True
+            )
+
+            # Log restricted/blacklisted attempt
+            await log_event(
+                interaction.guild,
+                f"🚫 {restricted_reason.title()} User Attempt",
+                f"{interaction.user.mention} attempted to join the waitlist but is {restricted_reason}",
+                discord.Color.red(),
+                [
+                    ("User", interaction.user.mention, True),
+                    ("User ID", str(interaction.user.id), True),
+                    ("Status", restricted_reason.title(), True),
+                    ("Attempted Via", "Waitlist Modal", False)
+                ]
             )
             return
 
@@ -464,7 +569,35 @@ class WaitlistModal(Modal, title="Join the Waitlist"):
                 f"Time Remaining: **{time_str}**",
                 ephemeral=True
             )
+
+            # Log cooldown violation
+            await log_event(
+                interaction.guild,
+                "⏱️ Cooldown Violation",
+                f"{interaction.user.mention} attempted to join waitlist while on cooldown",
+                discord.Color.yellow(),
+                [
+                    ("User", interaction.user.mention, True),
+                    ("Cooldown Type", cooldown_type, True),
+                    ("Time Remaining", time_str, True),
+                    ("Attempted Via", "Waitlist Modal", False)
+                ]
+            )
             return
+
+        # Log if user is using booster cooldown
+        if has_booster:
+            await log_event(
+                interaction.guild,
+                "⚡ Booster Cooldown Active",
+                f"{interaction.user.mention} passed cooldown check with booster status",
+                discord.Color.purple(),
+                [
+                    ("User", interaction.user.mention, True),
+                    ("Cooldown Type", "Booster (1 Day)", True),
+                    ("Status", "Cooldown expired/passed", True)
+                ]
+            )
 
         # Map region to channel (AS and AU both go to as-waitlist)
         region_lower = region.lower()
@@ -510,6 +643,22 @@ class WaitlistModal(Modal, title="Join the Waitlist"):
                 f"You have been added to the **{region.upper()}** waitlist. Please wait for a tester to pick you up!",
                 ephemeral=True
             )
+
+        # Log waitlist join
+        await log_event(
+            interaction.guild,
+            "📋 User Joined Waitlist",
+            f"{interaction.user.mention} joined the {region.upper()} waitlist",
+            discord.Color.blue(),
+            [
+                ("User", interaction.user.mention, True),
+                ("IGN", entered_ign, True),
+                ("Region", region.upper(), True),
+                ("Preferred Server", preferred_server, False),
+                ("Testers Available", "Yes" if testers_for_region else "No", True),
+                ("Queue Position", str(len([e for e in waitlist if e["region"] == region_lower])), True)
+            ]
+        )
         return
 
 
@@ -730,18 +879,33 @@ async def joinqueue_command(interaction: discord.Interaction, region: str):
         return
 
     # Check if there were no testers before this one joined
-    had_testers = len(active_testers[region]) > 0
-    
+    had_testers_before = len(active_testers[region]) > 0
+
     active_testers[region].add(interaction.user.id)
     await interaction.response.send_message(
         f"You are now active as a tester for region **{region.upper()}**",
         ephemeral=True
     )
+
+    # Log tester joining queue
+    await log_event(
+        interaction.guild,
+        "🧪 Tester Joined Queue",
+        f"{interaction.user.mention} joined the {region.upper()} tester queue",
+        discord.Color.purple(),
+        [
+            ("Tester", interaction.user.mention, True),
+            ("Region", region.upper(), True),
+            ("Active Testers", str(len(active_testers[region])), True),
+            ("Queue Opened", "Yes" if not had_testers_before else "No", True)
+        ]
+    )
+
     # Update queue display in waitlist channel
     await update_queue_display(interaction.guild, region)
     
     # Ping waitlist role if this is the first tester joining
-    if not had_testers:
+    if not had_testers_before:
         role_id_map = {
             "na": NA_WAITLIST_ROLE_ID,
             "eu": EU_WAITLIST_ROLE_ID,
@@ -777,6 +941,21 @@ async def leavequeue_command(interaction: discord.Interaction, region: str):
             f"You have left the queue for region **{region.upper()}**",
             ephemeral=True
         )
+
+        # Log tester leaving queue
+        await log_event(
+            interaction.guild,
+            "🚪 Tester Left Queue",
+            f"{interaction.user.mention} left the {region.upper()} tester queue",
+            discord.Color.orange(),
+            [
+                ("Tester", interaction.user.mention, True),
+                ("Region", region.upper(), True),
+                ("Remaining Testers", str(len(active_testers[region])), True),
+                ("Queue Closed", "Yes" if len(active_testers[region]) == 0 else "No", True)
+            ]
+        )
+
         # Update queue display in waitlist channel
         await update_queue_display(interaction.guild, region)
     else:
@@ -819,6 +998,20 @@ async def leavewaitlist_command(interaction: discord.Interaction):
             f"You have been removed from the **{user_entry['region'].upper()}** waitlist.",
             ephemeral=True
         )
+
+        # Log waitlist leave
+        await log_event(
+            interaction.guild,
+            "🚪 User Left Waitlist",
+            f"{interaction.user.mention} left the {user_entry['region'].upper()} waitlist",
+            discord.Color.orange(),
+            [
+                ("User", interaction.user.mention, True),
+                ("Region", user_entry['region'].upper(), True),
+                ("IGN", user_entry.get('ign', 'Unknown'), True)
+            ]
+        )
+
         # Update queue display in waitlist channel
         await update_queue_display(interaction.guild, region)
     else:
@@ -1036,6 +1229,21 @@ async def next_command(interaction: discord.Interaction):
         await interaction.response.send_message(
             f"You are now testing **{next_user_entry['ign']}** in {testing_channel.mention}",
             ephemeral=True
+        )
+
+        # Log test started
+        await log_event(
+            interaction.guild,
+            "🎯 Test Started",
+            f"Testing session started for {user.mention}",
+            discord.Color.green(),
+            [
+                ("Tester", interaction.user.mention, True),
+                ("Player", user.mention, True),
+                ("IGN", next_user_entry['ign'], True),
+                ("Region", tester_region.upper(), True),
+                ("Channel", testing_channel.mention, False)
+            ]
         )
 
     except discord.Forbidden:
@@ -1353,8 +1561,39 @@ async def closetest_command(interaction: discord.Interaction, rank: str):
     user_ranks[session["user_id"]] = rank
 
     # Set cooldown timestamp for the user
-    import time
     user_cooldowns[session["user_id"]] = time.time()
+
+    # Check if user has booster role for logging
+    user = guild.get_member(session["user_id"])
+    has_booster = False
+    if BOOSTER_ROLE_ID and user:
+        booster_role = guild.get_role(BOOSTER_ROLE_ID)
+        if booster_role and booster_role in user.roles:
+            has_booster = True
+
+    # Log cooldown assignment
+    cooldown_type = "Booster (1 Day)" if has_booster else "Normal (4 Days)"
+    await log_event(
+        guild,
+        "⏱️ Cooldown Assigned",
+        f"{session['user_mention']} has been placed on cooldown",
+        discord.Color.blue(),
+        [
+            ("User", session['user_mention'], True),
+            ("Cooldown Type", cooldown_type, True),
+            ("Expires", "1 day from now" if has_booster else "4 days from now", True),
+            ("Booster Role", "Active" if has_booster else "Not Active", False)
+        ]
+    )
+
+    # Update last testing session timestamp for this region
+    global last_testing_session
+    from datetime import datetime
+    test_region = session.get("region", "na")  # Get region from session
+    last_testing_session[test_region] = datetime.now()
+
+    # Update queue display to show new last testing session time
+    await update_queue_display(guild, test_region)
 
     # Remove from active sessions
     del active_sessions[interaction.channel.id]
@@ -1362,6 +1601,23 @@ async def closetest_command(interaction: discord.Interaction, rank: str):
     # Send closing confirmation
     await interaction.followup.send(
         f"Test completed! Results posted in {results_channel.mention}"
+    )
+
+    # Log test completion
+    await log_event(
+        interaction.guild,
+        "✅ Test Completed",
+        f"Testing session completed for {session['user_mention']}",
+        discord.Color.gold(),
+        [
+            ("Tester", session['tester_mention'], True),
+            ("Player", session['user_mention'], True),
+            ("IGN", session['ign'], True),
+            ("Region", test_region.upper(), True),
+            ("Previous Rank", previous_rank, True),
+            ("Earned Rank", rank_display, True),
+            ("Results", results_channel.mention, False)
+        ]
     )
 
     # Wait a moment then delete the channel
@@ -1373,7 +1629,7 @@ async def closetest_command(interaction: discord.Interaction, rank: str):
 async def waitlist_command(interaction: discord.Interaction):
     embed = discord.Embed(
         title="Evaluation Testing Waitlist",
-        description=(
+         description=(
             "Upon applying, you will be added to a waitlist channel.\n"
             "Here you will be pinged when a tester of your region is available.\n"
             "If you are HT3 or higher, a high ticket will be created.\n\n"
@@ -1381,8 +1637,7 @@ async def waitlist_command(interaction: discord.Interaction):
             "• Username should be the name of the account you will be testing on\n\n"
             "Failure to provide authentic information will result in a denied test."
         ),
-        color=discord.Color.blue()
-    )
+        color=discord.Color.blue() 
     embed.set_thumbnail(url=interaction.guild.icon.url if interaction.guild.icon else "https://cdn.discordapp.com/embed/avatars/0.png")
 
     view = WaitlistView()
