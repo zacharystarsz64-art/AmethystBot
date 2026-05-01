@@ -637,13 +637,14 @@ class VerifyModal(Modal, title="Verify Minecraft Account"):
                         player_data = data["data"]["player"]
                         uuid = player_data["id"]
                         real_ign = player_data["username"]
-                        skin_url = player_data["avatar"]
+                        # Use full body skin render instead of just head
+                        skin_url = f"https://mc-heads.net/player/{uuid}"
 
                         # Store verified user
                         verified_users[interaction.user.id] = {
                             "ign": real_ign,
                             "uuid": uuid,
-                            "skin_url": skin_url
+                            "skin_url": f"https://mc-heads.net/player/{uuid}"
                         }
 
                         # Create embed with skin
@@ -653,7 +654,7 @@ class VerifyModal(Modal, title="Verify Minecraft Account"):
                             color=discord.Color.green()
                         )
                         embed.add_field(name="IGN", value=real_ign, inline=False)
-                        embed.set_thumbnail(url=skin_url)
+                        embed.set_image(url=skin_url)
 
                         await interaction.response.send_message(
                             embed=embed,
@@ -840,7 +841,7 @@ class WaitlistModal(Modal, title="Join the Waitlist"):
             "region": region_lower,
             "ign": entered_ign,
             "preferred_server": preferred_server,
-            "skin_url": user_data["skin_url"]
+            "skin_url": f"https://mc-heads.net/player/{user_data['uuid']}"
         })
         
         # Trigger queue display update
@@ -1046,7 +1047,8 @@ async def cmds_command(interaction: discord.Interaction):
         "`/verify` - Verify your Minecraft account\n"
         "`/waitlist` - Open the waitlist entry form\n"
         "`/leavewaitlist` - Remove yourself from the waitlist\n"
-        "`/queue` - View the current queue for your region"
+        "`/queue` - View the current queue for your region\n"
+        "`/cooldown` - Check your cooldown status"
     )
     embed.add_field(name="👤 Player Commands", value=player_cmds, inline=False)
     
@@ -1067,7 +1069,9 @@ async def cmds_command(interaction: discord.Interaction):
         "`/sync` - Force sync slash commands\n"
         "`/cmds` - Show this command list\n"
         "`/features` - Show bot features\n"
-        "`/leaderboard` - View testing leaderboards"
+        "`/leaderboard` - View testing leaderboards\n"
+        "`/resetcooldown @user` - Reset user's cooldown (Admin only)\n"
+        "`/clearqueue <region>` - Clear a region queue (Admin only)"
     )
     embed.add_field(name="⚙️ Admin/Info Commands", value=admin_cmds, inline=False)
     
@@ -1249,6 +1253,179 @@ async def leaderboard_command(interaction: discord.Interaction, action: str = "v
     embed.set_footer(text="Use /leaderboard action:refresh to update • /leaderboard action:my_stats for your stats")
     
     await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@tree.command(name="cooldown", description="Check your cooldown status")
+async def cooldown_command(interaction: discord.Interaction):
+    user_id = interaction.user.id
+    
+    if user_id not in user_cooldowns:
+        await interaction.response.send_message(
+            "✅ **No Cooldown Active**\nYou are free to enter the waitlist!",
+            ephemeral=True
+        )
+        return
+    
+    last_test_time = user_cooldowns[user_id]
+    current_time = time.time()
+    
+    # Check if user has booster role
+    has_booster = False
+    if BOOSTER_ROLE_ID:
+        booster_role = interaction.guild.get_role(BOOSTER_ROLE_ID)
+        if booster_role and booster_role in interaction.user.roles:
+            has_booster = True
+    
+    cooldown_duration = BOOSTER_COOLDOWN if has_booster else NORMAL_COOLDOWN
+    remaining_time = last_test_time + cooldown_duration - current_time
+    
+    if remaining_time <= 0:
+        await interaction.response.send_message(
+            "✅ **Cooldown Expired**\nYou are free to enter the waitlist!",
+            ephemeral=True
+        )
+    else:
+        # Format remaining time
+        days = int(remaining_time // 86400)
+        hours = int((remaining_time % 86400) // 3600)
+        minutes = int((remaining_time % 3600) // 60)
+        
+        time_parts = []
+        if days > 0:
+            time_parts.append(f"{days} day{'s' if days != 1 else ''}")
+        if hours > 0:
+            time_parts.append(f"{hours} hour{'s' if hours != 1 else ''}")
+        if minutes > 0:
+            time_parts.append(f"{minutes} minute{'s' if minutes != 1 else ''}")
+        
+        time_str = ", ".join(time_parts) if time_parts else "less than a minute"
+        cooldown_type = "Booster (1 Day)" if has_booster else "Normal (4 Days)"
+        
+        embed = discord.Embed(
+            title="⏱️ Cooldown Status",
+            description=f"**Time Remaining:** {time_str}",
+            color=discord.Color.yellow()
+        )
+        embed.add_field(name="Cooldown Type", value=cooldown_type, inline=True)
+        embed.add_field(name="Status", value="🔒 On Cooldown", inline=True)
+        
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@tree.command(name="resetcooldown", description="Reset cooldown for a user (Admin only)")
+@app_commands.describe(user="The user to reset cooldown for")
+async def resetcooldown_command(interaction: discord.Interaction, user: discord.Member):
+    # Check if user has admin permissions
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message(
+            "Only administrators can reset cooldowns!",
+            ephemeral=True
+        )
+        return
+    
+    user_id = str(user.id)
+    
+    if user_id in user_cooldowns:
+        del user_cooldowns[user_id]
+        save_data()
+        
+        await interaction.response.send_message(
+            f"✅ Cooldown reset for {user.mention}!",
+            ephemeral=True
+        )
+        
+        # Log the action
+        await log_event(
+            interaction.guild,
+            "⚙️ Cooldown Reset",
+            f"{interaction.user.mention} reset cooldown for {user.mention}",
+            discord.Color.orange(),
+            [
+                ("Admin", interaction.user.mention, True),
+                ("User", user.mention, True),
+                ("Action", "Cooldown Reset", True)
+            ]
+        )
+    else:
+        await interaction.response.send_message(
+            f"{user.mention} is not currently on cooldown.",
+            ephemeral=True
+        )
+
+
+@tree.command(name="clearqueue", description="Clear all users from a region queue (Admin only)")
+@app_commands.describe(region="The region queue to clear")
+async def clearqueue_command(interaction: discord.Interaction, region: str):
+    # Check if user has admin permissions
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message(
+            "Only administrators can clear queues!",
+            ephemeral=True
+        )
+        return
+    
+    region = region.lower()
+    if region not in ["na", "eu", "as"]:
+        await interaction.response.send_message(
+            "Invalid region. Use: NA, EU, or AS",
+            ephemeral=True
+        )
+        return
+    
+    # Count users in queue
+    users_in_queue = [entry for entry in waitlist if entry["region"] == region]
+    count = len(users_in_queue)
+    
+    if count == 0:
+        await interaction.response.send_message(
+            f"The **{region.upper()}** queue is already empty.",
+            ephemeral=True
+        )
+        return
+    
+    # Remove users from queue
+    for entry in users_in_queue:
+        waitlist.remove(entry)
+        
+        # Remove waitlist role
+        waitlist_role_id = None
+        if region == "na":
+            waitlist_role_id = NA_WAITLIST_ROLE_ID
+        elif region == "eu":
+            waitlist_role_id = EU_WAITLIST_ROLE_ID
+        else:
+            waitlist_role_id = AS_WAITLIST_ROLE_ID
+        
+        if waitlist_role_id:
+            role = interaction.guild.get_role(waitlist_role_id)
+            if role:
+                user = interaction.guild.get_member(entry["user_id"])
+                if user:
+                    try:
+                        await user.remove_roles(role)
+                    except:
+                        pass
+    
+    # Update queue display
+    await update_queue_display(interaction.guild, region)
+    
+    await interaction.response.send_message(
+        f"✅ Cleared **{count}** user(s) from the **{region.upper()}** queue.",
+        ephemeral=True
+    )
+    
+    # Log the action
+    await log_event(
+        interaction.guild,
+        "⚠️ Queue Cleared",
+        f"{interaction.user.mention} cleared the {region.upper()} queue",
+        discord.Color.red(),
+        [
+            ("Admin", interaction.user.mention, True),
+            ("Region", region.upper(), True),
+            ("Users Removed", str(count), True)
+        ]
+    )
 
 
 @tree.command(name="joinqueue", description="Join the tester queue for your region")
@@ -1599,7 +1776,7 @@ async def next_command(interaction: discord.Interaction):
         embed.add_field(name="Region", value=tester_region.upper(), inline=True)
         embed.add_field(name="Preferred Server", value=next_user_entry['preferred_server'], inline=False)
         embed.add_field(name="Request Time", value=next_user_entry.get('request_time', 'N/A'), inline=False)
-        embed.set_thumbnail(url=next_user_entry['skin_url'])
+        embed.set_image(url=next_user_entry['skin_url'])
 
         await testing_channel.send(
             content=f"{user.mention}",
@@ -1614,7 +1791,7 @@ async def next_command(interaction: discord.Interaction):
             "user_mention": user.mention,
             "ign": next_user_entry['ign'],
             "region": tester_region,
-            "skin_url": next_user_entry['skin_url']
+            "skin_url": next_user_entry['skin_url']  # Already full body URL
         }
 
         # Send confirmation to tester
@@ -1718,7 +1895,7 @@ async def reload_command(interaction: discord.Interaction):
     embed.add_field(name="Region", value=session["region"].upper(), inline=True)
     embed.add_field(name="Preferred Server", value=session.get('preferred_server', 'N/A'), inline=False)
     embed.add_field(name="Request Time", value=session.get('request_time', 'N/A'), inline=False)
-    embed.set_thumbnail(url=session["skin_url"])
+    embed.set_image(url=session["skin_url"])
 
     await interaction.channel.send(
         content=f"{user.mention}",
@@ -1933,7 +2110,7 @@ async def closetest_command(interaction: discord.Interaction, rank: str):
     results_embed.add_field(name="Username:", value=session["ign"], inline=False)
     results_embed.add_field(name="Previous Rank:", value=previous_rank, inline=False)
     results_embed.add_field(name="Rank Earned:", value=rank_display, inline=False)
-    results_embed.set_thumbnail(url=session["skin_url"])
+    results_embed.set_image(url=session["skin_url"])
 
     # Send results to results channel with user mention
     results_message = await results_channel.send(
