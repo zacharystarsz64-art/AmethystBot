@@ -866,6 +866,43 @@ async def on_ready():
         except Exception as e:
             print(f"Error posting waitlist embed: {e}")
 
+    # Auto-post/initialize leaderboard
+    if LEADERBOARD_CHANNEL_ID:
+        try:
+            # Clear old bot messages in leaderboard channel first
+            lb_channel = bot.get_channel(LEADERBOARD_CHANNEL_ID)
+            if lb_channel:
+                async for message in lb_channel.history(limit=20):
+                    if message.author == bot.user:
+                        await message.delete()
+                
+                # Get first guild to initialize leaderboard
+                for guild in bot.guilds:
+                    await update_leaderboard(guild)
+                    break
+                
+                print(f"Leaderboard initialized in {lb_channel.name}")
+        except Exception as e:
+            print(f"Error initializing leaderboard channel: {e}")
+
+    # Send startup log message
+    if LOG_CHANNEL_ID:
+        try:
+            log_channel = bot.get_channel(LOG_CHANNEL_ID)
+            if log_channel:
+                startup_embed = discord.Embed(
+                    title="🤖 Bot Started",
+                    description=f"**{bot.user.name}** is now online and ready!",
+                    color=discord.Color.green(),
+                    timestamp=datetime.now()
+                )
+                startup_embed.add_field(name="Servers", value=str(len(bot.guilds)), inline=True)
+                startup_embed.add_field(name="Commands", value=str(len(tree.get_commands())), inline=True)
+                await log_channel.send(embed=startup_embed)
+                print(f"Startup log sent to {log_channel.name}")
+        except Exception as e:
+            print(f"Error sending startup log: {e}")
+
 @tree.command(name="sync", description="Force sync slash commands (Owner only)")
 async def sync_command(interaction: discord.Interaction):
     if not interaction.user.guild_permissions.administrator:
@@ -1894,7 +1931,8 @@ async def waitlist_command(interaction: discord.Interaction):
             "• Username should be the name of the account you will be testing on\n\n"
             "Failure to provide authentic information will result in a denied test."
         ),
-        color=discord.Color.blue() 
+        color=discord.Color.blue()
+    )
     embed.set_thumbnail(url=interaction.guild.icon.url if interaction.guild.icon else "https://cdn.discordapp.com/embed/avatars/0.png")
 
     view = WaitlistView()
