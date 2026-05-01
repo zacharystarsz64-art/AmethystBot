@@ -654,7 +654,7 @@ class VerifyModal(Modal, title="Verify Minecraft Account"):
                             color=discord.Color.green()
                         )
                         embed.add_field(name="IGN", value=real_ign, inline=False)
-                        embed.set_image(url=skin_url)
+                        embed.set_thumbnail(url=skin_url)
 
                         await interaction.response.send_message(
                             embed=embed,
@@ -920,6 +920,67 @@ class WaitlistView(View):
             return
 
         await interaction.response.send_modal(WaitlistModal())
+
+    @discord.ui.button(
+        label="View Cooldown",
+        style=discord.ButtonStyle.danger,
+        custom_id="view_cooldown"
+    )
+    async def cooldown_button(self, interaction: discord.Interaction, button: Button):
+        user_id = interaction.user.id
+        
+        # Check if user has cooldown
+        if user_id not in user_cooldowns:
+            await interaction.response.send_message(
+                "✅ **No Cooldown Active**\nYou are free to enter the waitlist!",
+                ephemeral=True
+            )
+            return
+        
+        last_test_time = user_cooldowns[user_id]
+        current_time = time.time()
+        
+        # Check if user has booster role
+        has_booster = False
+        if BOOSTER_ROLE_ID:
+            booster_role = interaction.guild.get_role(BOOSTER_ROLE_ID)
+            if booster_role and booster_role in interaction.user.roles:
+                has_booster = True
+        
+        cooldown_duration = BOOSTER_COOLDOWN if has_booster else NORMAL_COOLDOWN
+        remaining_time = last_test_time + cooldown_duration - current_time
+        
+        if remaining_time <= 0:
+            await interaction.response.send_message(
+                "✅ **Cooldown Expired**\nYou are free to enter the waitlist!",
+                ephemeral=True
+            )
+        else:
+            # Format remaining time
+            days = int(remaining_time // 86400)
+            hours = int((remaining_time % 86400) // 3600)
+            minutes = int((remaining_time % 3600) // 60)
+            
+            time_parts = []
+            if days > 0:
+                time_parts.append(f"{days} day{'s' if days != 1 else ''}")
+            if hours > 0:
+                time_parts.append(f"{hours} hour{'s' if hours != 1 else ''}")
+            if minutes > 0:
+                time_parts.append(f"{minutes} minute{'s' if minutes != 1 else ''}")
+            
+            time_str = ", ".join(time_parts) if time_parts else "less than a minute"
+            cooldown_type = "Booster (1 Day)" if has_booster else "Normal (4 Days)"
+            
+            embed = discord.Embed(
+                title="⏱️ Cooldown Status",
+                description=f"**Time Remaining:** {time_str}",
+                color=discord.Color.red()
+            )
+            embed.add_field(name="Cooldown Type", value=cooldown_type, inline=True)
+            embed.add_field(name="Status", value="🔒 On Cooldown", inline=True)
+            
+            await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 @bot.event
@@ -1216,22 +1277,20 @@ async def leaderboard_command(interaction: discord.Interaction, action: str = "v
     
     total_monthly_tests = sum(count for _, count in monthly_leaderboard)
 
-    # Build all-time text (top 5 for ephemeral)
+    # Build all-time text (top 10 for ephemeral)
     all_time_text = ""
     if all_time_leaderboard:
-        for i, (tester_id, count) in enumerate(all_time_leaderboard[:5], 1):
+        for i, (tester_id, count) in enumerate(all_time_leaderboard[:10], 1):
             member = interaction.guild.get_member(tester_id)
             name = member.mention if member else f"<@{tester_id}>"
             all_time_text += f"**{i}.** {name} — **{count}** tests\n"
     else:
         all_time_text = "No tests completed yet!"
 
-    # Build monthly text (top 5 for ephemeral)
+    # Build monthly text (top 10 for ephemeral)
     monthly_text = ""
     if monthly_leaderboard and monthly_leaderboard[0][1] > 0:
-        for i, (tester_id, count) in enumerate(monthly_leaderboard[:5], 1):
-            if count == 0:
-                break
+        for i, (tester_id, count) in enumerate(monthly_leaderboard[:10], 1):
             member = interaction.guild.get_member(tester_id)
             name = member.mention if member else f"<@{tester_id}>"
             monthly_text += f"**{i}.** {name} — **{count}** tests\n"
@@ -1244,8 +1303,8 @@ async def leaderboard_command(interaction: discord.Interaction, action: str = "v
         timestamp=now
     )
     
-    embed.add_field(name="🏆 All-Time Top 5", value=all_time_text, inline=False)
-    embed.add_field(name=f"🥇 {now.strftime('%B')} Top 5", value=monthly_text, inline=False)
+    embed.add_field(name="🏆 All-Time Top 10", value=all_time_text, inline=False)
+    embed.add_field(name=f"🥇 {now.strftime('%B')} Top 10", value=monthly_text, inline=False)
     
     if total_monthly_tests > 0:
         embed.add_field(name="\u200b", value=f"**Total Tests this Month: {total_monthly_tests}**", inline=False)
@@ -1776,7 +1835,7 @@ async def next_command(interaction: discord.Interaction):
         embed.add_field(name="Region", value=tester_region.upper(), inline=True)
         embed.add_field(name="Preferred Server", value=next_user_entry['preferred_server'], inline=False)
         embed.add_field(name="Request Time", value=next_user_entry.get('request_time', 'N/A'), inline=False)
-        embed.set_image(url=next_user_entry['skin_url'])
+        embed.set_thumbnail(url=next_user_entry['skin_url'])
 
         await testing_channel.send(
             content=f"{user.mention}",
@@ -1895,7 +1954,7 @@ async def reload_command(interaction: discord.Interaction):
     embed.add_field(name="Region", value=session["region"].upper(), inline=True)
     embed.add_field(name="Preferred Server", value=session.get('preferred_server', 'N/A'), inline=False)
     embed.add_field(name="Request Time", value=session.get('request_time', 'N/A'), inline=False)
-    embed.set_image(url=session["skin_url"])
+    embed.set_thumbnail(url=session["skin_url"])
 
     await interaction.channel.send(
         content=f"{user.mention}",
@@ -2110,7 +2169,7 @@ async def closetest_command(interaction: discord.Interaction, rank: str):
     results_embed.add_field(name="Username:", value=session["ign"], inline=False)
     results_embed.add_field(name="Previous Rank:", value=previous_rank, inline=False)
     results_embed.add_field(name="Rank Earned:", value=rank_display, inline=False)
-    results_embed.set_image(url=session["skin_url"])
+    results_embed.set_thumbnail(url=session["skin_url"])
 
     # Send results to results channel with user mention
     results_message = await results_channel.send(
