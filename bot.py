@@ -5,8 +5,17 @@ import aiohttp
 import asyncio
 import os
 import time
+import json
 from datetime import datetime
 from dotenv import load_dotenv
+
+# Data persistence file paths
+DATA_DIR = "data"
+STATS_FILE = os.path.join(DATA_DIR, "tester_stats.json")
+COOLDOWNS_FILE = os.path.join(DATA_DIR, "user_cooldowns.json")
+RANKS_FILE = os.path.join(DATA_DIR, "user_ranks.json")
+VERIFIED_FILE = os.path.join(DATA_DIR, "verified_users.json")
+LAST_SESSION_FILE = os.path.join(DATA_DIR, "last_testing_session.json")
 
 # Load environment variables from .env file
 load_dotenv()
@@ -94,6 +103,107 @@ async def log_event(guild, title, description, color=discord.Color.blue(), field
         await log_channel.send(embed=embed)
     except Exception as e:
         print(f"Failed to send log: {e}")
+
+
+def save_data():
+    """Save all data to JSON files"""
+    try:
+        # Create data directory if it doesn't exist
+        if not os.path.exists(DATA_DIR):
+            os.makedirs(DATA_DIR)
+        
+        # Save tester stats (convert keys to strings for JSON)
+        stats_to_save = {}
+        for tester_id, stats in tester_stats.items():
+            monthly_str_keys = {}
+            for (year, month), count in stats["monthly"].items():
+                monthly_str_keys[f"{year}-{month}"] = count
+            stats_to_save[str(tester_id)] = {
+                "all_time": stats["all_time"],
+                "monthly": monthly_str_keys
+            }
+        with open(STATS_FILE, 'w') as f:
+            json.dump(stats_to_save, f, indent=2)
+        
+        # Save cooldowns
+        with open(COOLDOWNS_FILE, 'w') as f:
+            json.dump(user_cooldowns, f, indent=2)
+        
+        # Save ranks
+        with open(RANKS_FILE, 'w') as f:
+            json.dump(user_ranks, f, indent=2)
+        
+        # Save verified users
+        with open(VERIFIED_FILE, 'w') as f:
+            json.dump(verified_users, f, indent=2)
+        
+        # Save last testing session (convert datetime to ISO format)
+        session_to_save = {}
+        for region, timestamp in last_testing_session.items():
+            if timestamp:
+                session_to_save[region] = timestamp.isoformat()
+            else:
+                session_to_save[region] = None
+        with open(LAST_SESSION_FILE, 'w') as f:
+            json.dump(session_to_save, f, indent=2)
+        
+        print("✅ Data saved successfully")
+    except Exception as e:
+        print(f"❌ Failed to save data: {e}")
+
+
+def load_data():
+    """Load all data from JSON files"""
+    global tester_stats, user_cooldowns, user_ranks, verified_users, last_testing_session
+    
+    try:
+        # Load tester stats
+        if os.path.exists(STATS_FILE):
+            with open(STATS_FILE, 'r') as f:
+                stats_data = json.load(f)
+                for tester_id_str, stats in stats_data.items():
+                    monthly_dict = {}
+                    for month_key, count in stats["monthly"].items():
+                        year, month = map(int, month_key.split('-'))
+                        monthly_dict[(year, month)] = count
+                    tester_stats[int(tester_id_str)] = {
+                        "all_time": stats["all_time"],
+                        "monthly": monthly_dict
+                    }
+            print(f"✅ Loaded {len(tester_stats)} tester stats")
+        
+        # Load cooldowns
+        if os.path.exists(COOLDOWNS_FILE):
+            with open(COOLDOWNS_FILE, 'r') as f:
+                user_cooldowns.update(json.load(f))
+            print(f"✅ Loaded {len(user_cooldowns)} cooldowns")
+        
+        # Load ranks
+        if os.path.exists(RANKS_FILE):
+            with open(RANKS_FILE, 'r') as f:
+                user_ranks.update(json.load(f))
+            print(f"✅ Loaded {len(user_ranks)} ranks")
+        
+        # Load verified users
+        if os.path.exists(VERIFIED_FILE):
+            with open(VERIFIED_FILE, 'r') as f:
+                verified_users.update(json.load(f))
+            print(f"✅ Loaded {len(verified_users)} verified users")
+        
+        # Load last testing session
+        if os.path.exists(LAST_SESSION_FILE):
+            with open(LAST_SESSION_FILE, 'r') as f:
+                session_data = json.load(f)
+                for region, timestamp_str in session_data.items():
+                    if timestamp_str:
+                        last_testing_session[region] = datetime.fromisoformat(timestamp_str)
+                    else:
+                        last_testing_session[region] = None
+            print(f"✅ Loaded last testing session data")
+        
+        print("✅ All data loaded successfully")
+    except Exception as e:
+        print(f"❌ Failed to load data: {e}")
 
 
 async def update_leaderboard(guild):
@@ -562,6 +672,9 @@ class VerifyModal(Modal, title="Verify Minecraft Account"):
                                 ("UUID", uuid[:8] + "...", False)
                             ]
                         )
+                        
+                        # Save data
+                        save_data()
                         return
 
         # If we get here, verification failed
@@ -811,6 +924,9 @@ class WaitlistView(View):
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user} (ID: {bot.user.id})")
+    
+    # Load saved data
+    load_data()
     
     # Sync commands to every guild the bot is in
     for guild in bot.guilds:
@@ -1896,6 +2012,9 @@ async def closetest_command(interaction: discord.Interaction, rank: str):
 
     # Update leaderboard display
     await update_leaderboard(guild)
+    
+    # Save data to persist stats
+    save_data()
 
     # Log test completion
     await log_event(
@@ -1939,5 +2058,23 @@ async def waitlist_command(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, view=view)
 
 
+# Handle graceful shutdown
+def handle_shutdown(signum, frame):
+    print("\n⚠️  Shutdown signal received, saving data...")
+    save_data()
+    print("✅ Data saved. Exiting...")
+    exit(0)
+
+# Register signal handlers
+import signal
+signal.signal(signal.SIGINT, handle_shutdown)  # Ctrl+C
+signal.signal(signal.SIGTERM, handle_shutdown)  # Termination signal
+
 # Run the bot
-bot.run(os.getenv("DISCORD_TOKEN"))
+try:
+    bot.run(os.getenv("DISCORD_TOKEN"))
+finally:
+    # Save data when bot stops
+    print("⚠️  Bot stopped, saving data...")
+    save_data()
+    print("✅ Data saved.")
