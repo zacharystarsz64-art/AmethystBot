@@ -1102,10 +1102,12 @@ async def sync_command(interaction: discord.Interaction):
     
     await interaction.response.defer(ephemeral=True)
     try:
+        # Sync to current guild (instant) and globally
+        await tree.sync(guild=interaction.guild)
         await tree.sync()
-        await interaction.followup.send("Commands synced globally!")
+        await interaction.followup.send(f"✅ Commands synced for **{interaction.guild.name}**! (Global sync may take up to 1 hour)")
     except Exception as e:
-        await interaction.followup.send(f"Sync failed: {e}")
+        await interaction.followup.send(f"❌ Sync failed: {e}")
 
 
 @tree.command(name="cmds", description="List all available bot commands")
