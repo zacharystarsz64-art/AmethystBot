@@ -22,7 +22,8 @@ AS_WAITLIST_CHANNEL_ID = 1497774571238068324
 RESULTS_CHANNEL_ID = 1497774543350009936
 BOT_COMMANDS_CHANNEL_ID = 1498027031513006191
 REQUEST_TEST_CHANNEL_ID = 1497774516892336159     # Channel for the main waitlist form (e.g., #request-test)
-LOG_CHANNEL_ID = None                              # Channel for bot logs (set to enable logging)
+LOG_CHANNEL_ID = 1497774455588651179                              # Channel for bot logs (set to enable logging)
+LEADERBOARD_CHANNEL_ID = 1499214454405992609                      # Channel for testing leaderboards (set to enable)
 
 # Store message IDs for updating the queue display
 waitlist_messages = {"na": None, "eu": None, "as": None}
@@ -46,6 +47,12 @@ user_cooldowns = {}
 
 # Store last testing session timestamp per region {region: datetime}
 last_testing_session = {"na": None, "eu": None, "as": None}
+
+# Store tester statistics for leaderboards
+# {tester_id: {"all_time": count, "monthly": {("year", "month"): count}}}
+tester_stats = {}
+current_leaderboard_month = None  # Track current month for auto-reset
+leaderboard_message_ids = {"all_time": None, "monthly": None}  # Store message IDs for updates
 
 # =======================================================
 
@@ -87,6 +94,116 @@ async def log_event(guild, title, description, color=discord.Color.blue(), field
         await log_channel.send(embed=embed)
     except Exception as e:
         print(f"Failed to send log: {e}")
+
+
+async def update_leaderboard(guild):
+    """Update the testing leaderboard display"""
+    global current_leaderboard_month, leaderboard_message_ids
+    
+    if not LEADERBOARD_CHANNEL_ID:
+        return
+    
+    try:
+        channel = guild.get_channel(LEADERBOARD_CHANNEL_ID)
+        if not channel:
+            return
+        
+        now = datetime.now()
+        current_month_key = (now.year, now.month)
+        month_name = now.strftime("%B %Y")
+        
+        # Check if month changed - reset monthly stats
+        if current_leaderboard_month != current_month_key:
+            current_leaderboard_month = current_month_key
+            # Monthly stats auto-reset because we use new month key
+        
+        # Get all-time top 10
+        all_time_leaderboard = sorted(
+            [(tester_id, stats["all_time"]) for tester_id, stats in tester_stats.items()],
+            key=lambda x: x[1],
+            reverse=True
+        )[:10]
+        
+        # Get monthly top 10
+        monthly_leaderboard = sorted(
+            [(tester_id, stats["monthly"].get(current_month_key, 0)) 
+             for tester_id, stats in tester_stats.items()],
+            key=lambda x: x[1],
+            reverse=True
+        )[:10]
+        
+        # Calculate total tests for monthly
+        total_monthly_tests = sum(count for _, count in monthly_leaderboard)
+
+        # Build all-time embed
+        all_time_text = ""
+        if all_time_leaderboard:
+            for i, (tester_id, count) in enumerate(all_time_leaderboard, 1):
+                member = guild.get_member(tester_id)
+                name = member.mention if member else f"<@{tester_id}>"
+                all_time_text += f"**{i}.** {name} — **{count}** tests\n"
+        else:
+            all_time_text = "No tests completed yet!"
+
+        all_time_embed = discord.Embed(
+            title="🏆 All-Time Testing Leaderboard",
+            description=all_time_text,
+            color=discord.Color.gold(),
+            timestamp=now
+        )
+        
+        # Build monthly embed
+        monthly_text = ""
+        if monthly_leaderboard and monthly_leaderboard[0][1] > 0:
+            for i, (tester_id, count) in enumerate(monthly_leaderboard, 1):
+                if count == 0:
+                    break
+                member = guild.get_member(tester_id)
+                name = member.mention if member else f"<@{tester_id}>"
+                monthly_text += f"**{i}.** {name} — **{count}** tests\n"
+        else:
+            monthly_text = f"No tests for {month_name} yet!"
+
+        monthly_embed = discord.Embed(
+            title=f"🥇 {now.strftime('%B')} Testing Leaderboard",
+            description=monthly_text,
+            color=discord.Color.blue(),
+            timestamp=now
+        )
+        
+        # Add total count footer to monthly
+        if total_monthly_tests > 0:
+            monthly_embed.add_field(
+                name="\u200b",
+                value=f"**Total Tests this Month: {total_monthly_tests}**",
+                inline=False
+            )
+        
+        # Send or edit messages
+        if leaderboard_message_ids["all_time"]:
+            try:
+                message = await channel.fetch_message(leaderboard_message_ids["all_time"])
+                await message.edit(embed=all_time_embed)
+            except:
+                message = await channel.send(embed=all_time_embed)
+                leaderboard_message_ids["all_time"] = message.id
+        else:
+            message = await channel.send(embed=all_time_embed)
+            leaderboard_message_ids["all_time"] = message.id
+        
+        if leaderboard_message_ids["monthly"]:
+            try:
+                message = await channel.fetch_message(leaderboard_message_ids["monthly"])
+                await message.edit(embed=monthly_embed)
+            except:
+                message = await channel.send(embed=monthly_embed)
+                leaderboard_message_ids["monthly"] = message.id
+        else:
+            message = await channel.send(embed=monthly_embed)
+            leaderboard_message_ids["monthly"] = message.id
+            
+    except Exception as e:
+        print(f"Failed to update leaderboard: {e}")
 
 
 intents = discord.Intents.default()
@@ -702,13 +819,22 @@ async def on_ready():
             print(f"Synced commands to guild: {guild.name}")
         except Exception as e:
             print(f"Failed to sync to {guild.name}: {e}")
-    
-    # Initialise public queue displays
-    for region in ["na", "eu", "as"]:
+        
+        # Update queue display for each region on startup
+        for region in ["na", "eu", "as"]:
+            try:
+                await update_queue_display(guild, region)
+            except Exception as e:
+                print(f"Error updating queue display for {region}: {e}")
+        
+        # Initialize leaderboard on startup
         try:
-            await update_queue_display(None, region)
+            await update_leaderboard(guild)
+            print(f"Leaderboard initialized for {guild.name}")
         except Exception as e:
-            print(f"Error initialising queue display for {region}: {e}")
+            print(f"Error initializing leaderboard: {e}")
+
+    print("Bot is ready!")
 
     # Auto-post waitlist embed
     if REQUEST_TEST_CHANNEL_ID:
@@ -787,7 +913,8 @@ async def cmds_command(interaction: discord.Interaction):
     admin_cmds = (
         "`/sync` - Force sync slash commands\n"
         "`/cmds` - Show this command list\n"
-        "`/features` - Show bot features"
+        "`/features` - Show bot features\n"
+        "`/leaderboard` - View testing leaderboards"
     )
     embed.add_field(name="⚙️ Admin/Info Commands", value=admin_cmds, inline=False)
     
@@ -847,6 +974,16 @@ async def features_command(interaction: discord.Interaction):
     )
     embed.add_field(name="📈 Results & Verification", value=results_features, inline=False)
     
+    # Leaderboard System
+    leaderboard_features = (
+        "• **All-Time Leaderboard** - Top 10 testers with most tests ever\n"
+        "• **Monthly Leaderboard** - Top 10 testers for current month\n"
+        "• **Auto-Reset** - Monthly stats reset automatically each month\n"
+        "• **Personal Stats** - View your own testing statistics\n"
+        "• **Live Updates** - Updates automatically when tests complete"
+    )
+    embed.add_field(name="🏆 Leaderboard System", value=leaderboard_features, inline=False)
+    
     # Quality of Life
     qol_features = (
         "• **Auto-Cleanup** - Old bot messages deleted on restart\n"
@@ -855,6 +992,108 @@ async def features_command(interaction: discord.Interaction):
         "• **Ephemeral Messages** - Private responses for sensitive info"
     )
     embed.add_field(name="🎯 Quality of Life", value=qol_features, inline=False)
+    
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@tree.command(name="leaderboard", description="View testing leaderboards (Admin only refresh)")
+@app_commands.describe(action="Action to perform")
+@app_commands.choices(action=[
+    app_commands.Choice(name="view", value="view"),
+    app_commands.Choice(name="refresh", value="refresh"),
+    app_commands.Choice(name="my_stats", value="my_stats")
+])
+async def leaderboard_command(interaction: discord.Interaction, action: str = "view"):
+    # Only allow refresh for testers/admins
+    if action == "refresh":
+        tester_role = interaction.guild.get_role(TESTER_ROLE_ID)
+        if tester_role and tester_role not in interaction.user.roles:
+            await interaction.response.send_message(
+                "Only testers can refresh the leaderboard!",
+                ephemeral=True
+            )
+            return
+        
+        await interaction.response.defer(ephemeral=True)
+        await update_leaderboard(interaction.guild)
+        await interaction.followup.send("Leaderboard refreshed!")
+        return
+    
+    if action == "my_stats":
+        user_id = interaction.user.id
+        stats = tester_stats.get(user_id, {"all_time": 0, "monthly": {}})
+        
+        now = datetime.now()
+        month_key = (now.year, now.month)
+        monthly_count = stats["monthly"].get(month_key, 0)
+        
+        embed = discord.Embed(
+            title="📊 Your Testing Statistics",
+            color=discord.Color.purple(),
+            timestamp=now
+        )
+        embed.add_field(name="All-Time Tests", value=str(stats["all_time"]), inline=True)
+        embed.add_field(name=f"{now.strftime('%B')} Tests", value=str(monthly_count), inline=True)
+        
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        return
+    
+    # Default: view leaderboards
+    now = datetime.now()
+    current_month_key = (now.year, now.month)
+    
+    # Get all-time top 10
+    all_time_leaderboard = sorted(
+        [(tester_id, stats["all_time"]) for tester_id, stats in tester_stats.items()],
+        key=lambda x: x[1],
+        reverse=True
+    )[:10]
+    
+    # Get monthly top 10
+    monthly_leaderboard = sorted(
+        [(tester_id, stats["monthly"].get(current_month_key, 0)) 
+         for tester_id, stats in tester_stats.items()],
+        key=lambda x: x[1],
+        reverse=True
+    )[:10]
+    
+    total_monthly_tests = sum(count for _, count in monthly_leaderboard)
+
+    # Build all-time text (top 5 for ephemeral)
+    all_time_text = ""
+    if all_time_leaderboard:
+        for i, (tester_id, count) in enumerate(all_time_leaderboard[:5], 1):
+            member = interaction.guild.get_member(tester_id)
+            name = member.mention if member else f"<@{tester_id}>"
+            all_time_text += f"**{i}.** {name} — **{count}** tests\n"
+    else:
+        all_time_text = "No tests completed yet!"
+
+    # Build monthly text (top 5 for ephemeral)
+    monthly_text = ""
+    if monthly_leaderboard and monthly_leaderboard[0][1] > 0:
+        for i, (tester_id, count) in enumerate(monthly_leaderboard[:5], 1):
+            if count == 0:
+                break
+            member = interaction.guild.get_member(tester_id)
+            name = member.mention if member else f"<@{tester_id}>"
+            monthly_text += f"**{i}.** {name} — **{count}** tests\n"
+    else:
+        monthly_text = f"No tests for {now.strftime('%B')} yet!"
+
+    embed = discord.Embed(
+        title="🏆 Testing Leaderboards",
+        color=discord.Color.gold(),
+        timestamp=now
+    )
+    
+    embed.add_field(name="🏆 All-Time Top 5", value=all_time_text, inline=False)
+    embed.add_field(name=f"🥇 {now.strftime('%B')} Top 5", value=monthly_text, inline=False)
+    
+    if total_monthly_tests > 0:
+        embed.add_field(name="\u200b", value=f"**Total Tests this Month: {total_monthly_tests}**", inline=False)
+    
+    embed.set_footer(text="Use /leaderboard action:refresh to update • /leaderboard action:my_stats for your stats")
     
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -1602,6 +1841,24 @@ async def closetest_command(interaction: discord.Interaction, rank: str):
     await interaction.followup.send(
         f"Test completed! Results posted in {results_channel.mention}"
     )
+
+    # Update tester statistics for leaderboard
+    tester_id = session["tester_id"]
+    if tester_id not in tester_stats:
+        tester_stats[tester_id] = {"all_time": 0, "monthly": {}}
+    
+    # Update all-time count
+    tester_stats[tester_id]["all_time"] += 1
+    
+    # Update monthly count
+    now = datetime.now()
+    month_key = (now.year, now.month)
+    if month_key not in tester_stats[tester_id]["monthly"]:
+        tester_stats[tester_id]["monthly"][month_key] = 0
+    tester_stats[tester_id]["monthly"][month_key] += 1
+
+    # Update leaderboard display
+    await update_leaderboard(guild)
 
     # Log test completion
     await log_event(
